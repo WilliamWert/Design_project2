@@ -30,7 +30,7 @@ from tqdm import tqdm
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-MONGO_URI  = "YOUR_MONGODB_ATLAS_URI"
+MONGO_URI  = "mongodb+srv://williamcwert_db_user:KsjMkB8lcwSg9NcM@cluster0.v51ynam.mongodb.net/"
 DB_NAME    = "energy_forecast"
 COLLECTION = "pjm_hourly"
 
