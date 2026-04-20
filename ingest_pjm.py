@@ -22,7 +22,7 @@ from pymongo import MongoClient, UpdateOne
 # ---------------------------------------------------------------------------
 # Configuration — set via environment variables or edit defaults below
 # ---------------------------------------------------------------------------
-MONGO_URI   = "YOUR_MONGODB_ATLAS_URI"   # e.g. mongodb+srv://user:pass@cluster.mongodb.net/
+MONGO_URI   = "mongodb+srv://williamcwert_db_user:KsjMkB8lcwSg9NcM@cluster0.v51ynam.mongodb.net/"
 DB_NAME     = "energy_forecast"
 COLLECTION  = "pjm_hourly"
 
