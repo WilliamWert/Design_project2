@@ -2,17 +2,18 @@
 build_features.py
 -----------------
 Adds derived calendar and lag features to every document in the pjm_hourly
-MongoDB collection.  Run this AFTER ingest_pjm.py and ingest_weather.py have
-finished loading the raw load and temperature data.
+MongoDB collection. Run this AFTER ingest_pjm.py has finished.
 
 Features added per document
 ---------------------------
-  hour_of_day     int   0–23   (derived from datetime)
-  day_of_week     int   0–6    (0 = Monday)
-  month           int   1–12
-  is_holiday      bool         US federal holiday flag
-  demand_lag_24h  float        demand_mw from exactly 24 h prior (None if missing)
-  demand_lag_168h float        demand_mw from exactly 168 h prior (None if missing)
+  hour_of_day     int   0-23
+  day_of_week     int   0-6  (0 = Monday, 6 = Sunday)
+  month           int   1-12
+  year            int   e.g. 2024
+  season          str   "winter" | "spring" | "summer" | "fall"
+  is_holiday      bool  True if US federal holiday
+  demand_lag_24h  float demand_mw from 24 hours prior  (None if unavailable)
+  demand_lag_168h float demand_mw from 168 hours prior (None if unavailable)
 
 Usage:
     python build_features.py
@@ -21,102 +22,166 @@ Requirements:
     pip install pymongo[srv] holidays tqdm
 """
 
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 import holidays
 from pymongo import MongoClient, UpdateOne
+from pymongo.errors import BulkWriteError
 from tqdm import tqdm
+
+# ---------------------------------------------------------------------------
+# Logging configuration — writes to logs/build_features.log
+# ---------------------------------------------------------------------------
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("logs/build_features.log"),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-MONGO_URI  = "mongodb+srv://williamcwert_db_user:KsjMkB8lcwSg9NcM@cluster0.v51ynam.mongodb.net/"
-DB_NAME    = "energy_forecast"
-COLLECTION = "pjm_hourly"
+MONGO_URI   = os.getenv("MONGO_URI", "YOUR_MONGODB_ATLAS_URI")
+DB_NAME     = "energy_forecast"
+COLLECTION  = "pjm_hourly"
+BATCH_SIZE  = 500   # documents per bulk_write call
 
-US_HOLIDAYS = holidays.US()   # federal holiday calendar
+US_HOLIDAYS = holidays.US()
 
 
 # ---------------------------------------------------------------------------
-# Helper: parse datetime string to UTC datetime object
+# Helper: parse ISO-8601 UTC string to datetime
 # ---------------------------------------------------------------------------
 def parse_utc(dt_str: str) -> datetime:
+    """Parse a UTC datetime string of the form 'YYYY-MM-DDTHH:MM:SSZ'."""
     return datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
-# Helper: format datetime back to the document key string
+# Helper: format a datetime back to the document key string
 # ---------------------------------------------------------------------------
 def fmt_utc(dt: datetime) -> str:
+    """Format a UTC datetime as the canonical document key string."""
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Helper: derive meteorological season from month number
+# ---------------------------------------------------------------------------
+def get_season(month: int) -> str:
+    """Return the meteorological season name for a given month (1-12)."""
+    if month in (12, 1, 2):
+        return "winter"
+    elif month in (3, 4, 5):
+        return "spring"
+    elif month in (6, 7, 8):
+        return "summer"
+    else:
+        return "fall"
 
 
 # ---------------------------------------------------------------------------
 # Main feature-engineering pass
 # ---------------------------------------------------------------------------
-def build_features():
-    client     = MongoClient(MONGO_URI)
+def build_features() -> None:
+    """
+    Read all documents from pjm_hourly, compute calendar and lag features,
+    and write them back to MongoDB via batched bulk updates.
+
+    The function builds an in-memory demand index (datetime -> demand_mw) to
+    allow O(1) lag lookups without additional DB queries.
+    """
+    log.info("Connecting to MongoDB Atlas...")
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10_000)
+        client.admin.command("ping")
+        log.info("Connected to MongoDB Atlas successfully.")
+    except Exception as e:
+        log.error("Failed to connect to MongoDB: %s", e)
+        raise
+
     collection = client[DB_NAME][COLLECTION]
 
-    # Load all datetime -> demand_mw pairs into memory for O(1) lag lookups.
-    # ~87,600 documents × ~50 bytes each ≈ 4 MB — easily fits in RAM.
-    print("Loading demand index from MongoDB ...", flush=True)
+    # Build an in-memory index of datetime -> demand_mw for lag lookups.
+    # ~87,600 documents × ~60 bytes ≈ 5 MB — safely fits in RAM.
+    log.info("Loading demand index from MongoDB for lag feature computation...")
     demand_index: dict[str, float | None] = {
         doc["datetime"]: doc.get("demand_mw")
         for doc in collection.find({}, {"datetime": 1, "demand_mw": 1, "_id": 0})
     }
-    print(f"  {len(demand_index):,} documents indexed")
+    total_docs = len(demand_index)
+    log.info("Demand index loaded: %d documents.", total_docs)
 
     # Stream all documents, compute features, batch-write updates
-    cursor     = collection.find({}, {"datetime": 1, "_id": 1})
-    batch      = []
-    BATCH_SIZE = 500
+    cursor = collection.find({}, {"datetime": 1, "_id": 1})
+    batch: list[UpdateOne] = []
     total_updated = 0
 
-    for doc in tqdm(cursor, total=len(demand_index), desc="Computing features"):
+    for doc in tqdm(cursor, total=total_docs, desc="Computing features"):
         dt_str = doc.get("datetime")
         if not dt_str:
+            log.warning("Document %s has no 'datetime' field — skipping.", doc["_id"])
             continue
 
-        dt = parse_utc(dt_str)
+        try:
+            dt = parse_utc(dt_str)
+        except ValueError as e:
+            log.warning("Could not parse datetime '%s': %s — skipping.", dt_str, e)
+            continue
 
         # Calendar features
         hour_of_day = dt.hour
-        day_of_week = dt.weekday()          # 0 = Monday, 6 = Sunday
+        day_of_week = dt.weekday()       # 0 = Monday
         month       = dt.month
+        year        = dt.year
+        season      = get_season(month)
         is_holiday  = dt.date() in US_HOLIDAYS
 
-        # Lag features (24 h and 168 h = 1 week)
-        lag_24h_key  = fmt_utc(dt - timedelta(hours=24))
-        lag_168h_key = fmt_utc(dt - timedelta(hours=168))
-
-        demand_lag_24h  = demand_index.get(lag_24h_key)    # None if not in index
-        demand_lag_168h = demand_index.get(lag_168h_key)
-
-        update_fields = {
-            "hour_of_day":     hour_of_day,
-            "day_of_week":     day_of_week,
-            "month":           month,
-            "is_holiday":      is_holiday,
-            "demand_lag_24h":  demand_lag_24h,
-            "demand_lag_168h": demand_lag_168h,
-        }
+        # Lag features
+        demand_lag_24h  = demand_index.get(fmt_utc(dt - timedelta(hours=24)))
+        demand_lag_168h = demand_index.get(fmt_utc(dt - timedelta(hours=168)))
 
         batch.append(
-            UpdateOne({"_id": doc["_id"]}, {"$set": update_fields})
+            UpdateOne(
+                {"_id": doc["_id"]},
+                {"$set": {
+                    "hour_of_day":     hour_of_day,
+                    "day_of_week":     day_of_week,
+                    "month":           month,
+                    "year":            year,
+                    "season":          season,
+                    "is_holiday":      is_holiday,
+                    "demand_lag_24h":  demand_lag_24h,
+                    "demand_lag_168h": demand_lag_168h,
+                }},
+            )
         )
 
+        # Flush batch when it reaches BATCH_SIZE
         if len(batch) >= BATCH_SIZE:
-            result = collection.bulk_write(batch, ordered=False)
-            total_updated += result.modified_count
+            try:
+                result = collection.bulk_write(batch, ordered=False)
+                total_updated += result.modified_count
+            except BulkWriteError as e:
+                log.error("Bulk write error: %s", e.details)
             batch = []
 
-    # Flush remaining
+    # Flush any remaining operations
     if batch:
-        result = collection.bulk_write(batch, ordered=False)
-        total_updated += result.modified_count
+        try:
+            result = collection.bulk_write(batch, ordered=False)
+            total_updated += result.modified_count
+        except BulkWriteError as e:
+            log.error("Bulk write error (final flush): %s", e.details)
 
-    print(f"\nDone. Features added to {total_updated:,} documents.")
+    log.info("Feature engineering complete. Documents updated: %d / %d", total_updated, total_docs)
     client.close()
 
 
@@ -124,4 +189,6 @@ def build_features():
 # CLI entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    log.info("Starting build_features.py")
     build_features()
+    log.info("Done.")

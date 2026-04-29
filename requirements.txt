@@ -1,0 +1,10 @@
+pymongo[srv]==4.6.3
+requests>=2.31.0
+python-dateutil>=2.9.0
+tqdm>=4.66.0
+holidays>=0.46
+pandas>=2.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+matplotlib>=3.8.0
+certifi>=2024.0.0
