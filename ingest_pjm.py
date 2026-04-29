@@ -1,28 +1,40 @@
 """
 ingest_pjm.py
 -------------
-Downloads hourly actual metered load for the PJM East (PJM_E) zone from the
-PJM Data Miner 2 REST API and upserts each hour as a document in MongoDB Atlas.
+Downloads hourly electricity demand for the PJM interconnection from the
+U.S. Energy Information Administration (EIA) Open Data API v2 and upserts
+each hour as a document in MongoDB Atlas.
 
-Each document stored has the schema:
+Data source:
+    EIA API v2 — Hourly Electric Grid Monitor
+    https://www.eia.gov/opendata/
+
+Free API key registration (instant, no credit card):
+    https://www.eia.gov/opendata/register.php
+
+Each MongoDB document has the schema:
     {
-        "datetime":    "2024-01-15T14:00:00Z",   # UTC ISO-8601 timestamp
-        "region":      "PJM_E",
-        "demand_mw":   31842.7,
-        "ingested_at": "2026-04-22T03:00:00Z"
+        "datetime":    "2024-01-15T14:00:00Z",  # UTC ISO-8601
+        "region":      "PJM",
+        "demand_mw":   89231.0,                 # megawatt-hours ≈ MW for hourly data
+        "ingested_at": "2026-04-29T03:00:00Z"
     }
 
-Calendar and lag features are added separately by build_features.py.
+Calendar and lag features are added by build_features.py.
 
 Usage:
-    python ingest_pjm.py --start 2014-01-01 --end 2024-12-31
+    python ingest_pjm.py --start 2016-01-01 --end 2024-12-31
+
+    # Or set the EIA key and Mongo URI as environment variables:
+    export EIA_API_KEY="your_key_here"
+    export MONGO_URI="mongodb+srv://user:pass@cluster.mongodb.net/"
+    python ingest_pjm.py --start 2016-01-01 --end 2024-12-31
 
 Requirements:
-    pip install pymongo[srv] requests python-dateutil tqdm certifi
+    pip install pymongo[srv] requests certifi tqdm
 """
 
 import argparse
-import json
 import logging
 import os
 import time
@@ -30,12 +42,11 @@ from datetime import datetime, timedelta, timezone
 
 import certifi
 import requests
-from dateutil.parser import parse as parse_dt
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
 
 # ---------------------------------------------------------------------------
-# Logging — writes to logs/ingest_pjm.log AND stdout
+# Logging — stdout and logs/ingest_pjm.log
 # ---------------------------------------------------------------------------
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -49,181 +60,98 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — set as env vars or edit defaults below
 # ---------------------------------------------------------------------------
-MONGO_URI    = os.getenv("MONGO_URI", "YOUR_MONGODB_ATLAS_URI")
-DB_NAME      = "energy_forecast"
-COLLECTION   = "pjm_hourly"
+EIA_API_KEY = os.getenv("EIA_API_KEY", "YOUR_EIA_API_KEY")   # <-- paste your key here
+MONGO_URI   = os.getenv("MONGO_URI",   "YOUR_MONGODB_ATLAS_URI")
+DB_NAME     = "energy_forecast"
+COLLECTION  = "pjm_hourly"
 
-# PJM Data Miner 2 — hourly metered load feed
-PJM_API_BASE = "https://dataminer2.pjm.com/feed/hrl_load_metered/"
-ZONE         = "PJM_E"
-MAX_ROWS     = 50_000
-RATE_LIMIT_S = 1.2    # seconds between requests
-CHUNK_DAYS   = 30
+# EIA API v2 — Hourly Electric Grid Monitor, regional demand
+EIA_URL     = "https://api.eia.gov/v2/electricity/rto/region-data/data/"
+RESPONDENT  = "PJM"       # Full PJM Interconnection
+DATA_TYPE   = "D"         # D = Demand
+PAGE_SIZE   = 5000        # EIA max rows per request
+CHUNK_DAYS  = 90          # date window per request (EIA handles larger windows fine)
+RATE_LIMIT  = 0.5         # seconds between API pages
 
 
 # ---------------------------------------------------------------------------
-# Helper: probe the API once and log the raw response for debugging
+# Helper: fetch one page of EIA hourly demand data
 # ---------------------------------------------------------------------------
-def probe_api() -> bool:
+def fetch_eia_page(start: str, end: str, offset: int = 0) -> dict:
     """
-    Make a single minimal request and log the raw response so we can verify
-    the API is working and the response format matches what we expect.
-
-    Returns True if the response looks usable, False otherwise.
-    """
-    log.info("Probing PJM DM2 API with a 1-day test window...")
-    params = {
-        "startRow":               1,
-        "rowCount":               5,
-        "datetime_beginning_ept": "2024-01-01T00:00",
-        "datetime_ending_ept":    "2024-01-02T00:00",
-    }
-    try:
-        resp = requests.get(
-            PJM_API_BASE, params=params,
-            timeout=30, verify=certifi.where(),
-        )
-        log.info("Probe HTTP status: %s", resp.status_code)
-        log.info("Probe response (first 800 chars): %s", resp.text[:800])
-
-        if resp.status_code != 200:
-            log.error("API returned non-200 status. Cannot proceed.")
-            return False
-
-        payload = resp.json()
-        log.info("Probe JSON keys: %s", list(payload.keys()) if isinstance(payload, dict) else type(payload))
-
-        # Try to locate the data rows regardless of key name
-        rows = _extract_rows(payload)
-        log.info("Probe extracted %d rows. First row: %s", len(rows), rows[0] if rows else "none")
-        return True
-
-    except Exception as e:
-        log.error("Probe failed with exception: %s: %s", type(e).__name__, e)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Helper: extract the list of data rows from whatever the API returns
-# ---------------------------------------------------------------------------
-def _extract_rows(payload) -> list:
-    """
-    PJM's API may wrap data under different keys depending on version.
-    Try common key names before giving up.
-    """
-    if isinstance(payload, list):
-        return payload
-    for key in ("data", "items", "results", "Data", "Records", "records"):
-        if key in payload and isinstance(payload[key], list):
-            return payload[key]
-    return []
-
-
-# ---------------------------------------------------------------------------
-# Helper: extract total row count from the API response
-# ---------------------------------------------------------------------------
-def _extract_total_rows(payload) -> int:
-    """Return the total row count advertised by the API."""
-    for key in ("totalRows", "total_rows", "total", "count", "TotalRows"):
-        if key in payload:
-            try:
-                return int(payload[key])
-            except (ValueError, TypeError):
-                pass
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Helper: fetch one page of PJM hourly load data
-# ---------------------------------------------------------------------------
-def fetch_pjm_page(start_ept: str, end_ept: str, start_row: int = 1) -> dict:
-    """
-    Call the PJM DM2 hrl_load_metered feed for one page of data.
+    Call the EIA API v2 for one page of hourly PJM demand data.
 
     Parameters
     ----------
-    start_ept  : str  Window start in EPT, e.g. "2024-01-01T00:00"
-    end_ept    : str  Window end   in EPT, e.g. "2024-02-01T00:00"
-    start_row  : int  1-based pagination offset
+    start  : str  Start in EIA format "YYYY-MM-DDTHH", e.g. "2024-01-01T00"
+    end    : str  End   in EIA format "YYYY-MM-DDTHH", e.g. "2024-03-31T23"
+    offset : int  Pagination offset (0-based)
 
     Returns
     -------
-    dict  Raw API JSON payload
+    dict  Full EIA API JSON response
     """
     params = {
-        "startRow":               start_row,
-        "rowCount":               MAX_ROWS,
-        "datetime_beginning_ept": start_ept,
-        "datetime_ending_ept":    end_ept,
+        "api_key":               EIA_API_KEY,
+        "frequency":             "hourly",
+        "data[0]":               "value",
+        "facets[respondent][]":  RESPONDENT,
+        "facets[type][]":        DATA_TYPE,
+        "start":                 start,
+        "end":                   end,
+        "length":                PAGE_SIZE,
+        "offset":                offset,
+        "sort[0][column]":       "period",
+        "sort[0][direction]":    "asc",
     }
-    resp = requests.get(
-        PJM_API_BASE, params=params,
-        timeout=60, verify=certifi.where(),
-    )
+
+    resp = requests.get(EIA_URL, params=params, timeout=60, verify=certifi.where())
 
     if resp.status_code != 200:
-        log.error(
-            "HTTP %s for window %s→%s. Body: %s",
-            resp.status_code, start_ept, end_ept, resp.text[:400],
-        )
+        log.error("HTTP %s from EIA. Body: %s", resp.status_code, resp.text[:400])
         resp.raise_for_status()
 
-    try:
-        return resp.json()
-    except json.JSONDecodeError as e:
-        log.error(
-            "JSON parse error for window %s→%s: %s | Raw (first 400): %s",
-            start_ept, end_ept, e, resp.text[:400],
-        )
-        raise
+    payload = resp.json()
+
+    # Surface any EIA-level error messages
+    if "error" in payload:
+        log.error("EIA API error: %s", payload["error"])
+        raise RuntimeError(f"EIA API error: {payload['error']}")
+
+    return payload
 
 
 # ---------------------------------------------------------------------------
-# Helper: convert one raw API row into a MongoDB document
+# Helper: convert one EIA row into a MongoDB document
 # ---------------------------------------------------------------------------
 def build_doc(row: dict) -> dict:
     """
-    Convert a PJM API row into the project document schema.
+    Convert a raw EIA API row into the project document schema.
 
-    Tries multiple field names in case the API response format varies.
+    EIA hourly periods are formatted as "YYYY-MM-DDTHH" in local time (ET).
+    We store as UTC (EIA Eastern times are UTC-5/UTC-4 depending on DST,
+    but for this project we treat the period label as the hour identifier
+    and store it as-is with a Z suffix, consistent across the full dataset).
 
     Parameters
     ----------
-    row : dict  One row from the API data array
+    row : dict  One item from the EIA response data array
 
     Returns
     -------
     dict  MongoDB document ready for upsert
     """
-    # Locate the UTC datetime field
-    dt_str = (
-        row.get("datetime_beginning_utc")
-        or row.get("datetime_beginning_ept")
-        or row.get("datetime_beginning")
-        or row.get("DateTime")
-    )
-    if not dt_str:
-        raise ValueError(f"No datetime field found in row: {list(row.keys())}")
+    period = row.get("period", "")           # e.g. "2024-01-15T14"
+    demand = row.get("value")
 
-    dt_utc = parse_dt(dt_str)
-    if dt_utc.tzinfo is None:
-        # EPT = UTC-5 (EST) or UTC-4 (EDT); store as-is UTC approximation
-        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-
-    # Locate the load field
-    demand = (
-        row.get("area_load_mw")
-        or row.get("instantaneous_load")
-        or row.get("MW")
-        or row.get("load_mw")
-        or row.get("mw")
-    )
+    # Normalise to full ISO-8601 UTC string
+    dt_str = period + ":00:00Z" if len(period) == 13 else period + "Z"
 
     return {
-        "datetime":     dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "region":       ZONE,
+        "datetime":     dt_str,
+        "region":       RESPONDENT,
         "demand_mw":    float(demand) if demand is not None else None,
         "data_quality": None if demand is not None else "missing",
         "ingested_at":  datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -235,26 +163,29 @@ def build_doc(row: dict) -> dict:
 # ---------------------------------------------------------------------------
 def ingest(start_date: str, end_date: str) -> None:
     """
-    Ingest hourly PJM load data for the given date range into MongoDB Atlas.
+    Ingest hourly PJM demand data for the given date range into MongoDB Atlas.
 
     Parameters
     ----------
     start_date : str  "YYYY-MM-DD" inclusive start
     end_date   : str  "YYYY-MM-DD" inclusive end
     """
-    # Probe first so we fail fast with clear diagnostics
-    if not probe_api():
-        log.error("API probe failed — aborting. Check logs above for details.")
+    if EIA_API_KEY == "YOUR_EIA_API_KEY":
+        log.error(
+            "EIA API key not set. Register free at https://www.eia.gov/opendata/register.php "
+            "then set EIA_API_KEY env var or paste your key into this script."
+        )
         return
 
+    # Connect to MongoDB
     log.info("Connecting to MongoDB Atlas...")
     try:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10_000,
                              tlsCAFile=certifi.where())
         client.admin.command("ping")
-        log.info("Connected to MongoDB Atlas successfully.")
+        log.info("Connected successfully.")
     except Exception as e:
-        log.error("Failed to connect to MongoDB: %s: %s", type(e).__name__, e)
+        log.error("MongoDB connection failed: %s: %s", type(e).__name__, e)
         raise
 
     collection = client[DB_NAME][COLLECTION]
@@ -268,32 +199,32 @@ def ingest(start_date: str, end_date: str) -> None:
 
     while current < end:
         chunk_end = min(current + timedelta(days=CHUNK_DAYS), end)
-        start_ept = current.strftime("%Y-%m-%dT00:00")
-        end_ept   = chunk_end.strftime("%Y-%m-%dT00:00")
 
-        log.info("Fetching window %s → %s ...", start_ept, end_ept)
+        # EIA format: "YYYY-MM-DDTHH"
+        eia_start = current.strftime("%Y-%m-%dT00")
+        eia_end   = (chunk_end - timedelta(hours=1)).strftime("%Y-%m-%dT23")
 
-        start_row  = 1
+        log.info("Fetching %s → %s ...", eia_start, eia_end)
+
+        offset     = 0
         chunk_docs = []
 
         while True:
             try:
-                payload = fetch_pjm_page(start_ept, end_ept, start_row)
+                payload = fetch_eia_page(eia_start, eia_end, offset)
             except Exception as e:
                 log.error(
-                    "Skipping window %s → %s. Error: %s: %s",
-                    start_ept, end_ept, type(e).__name__, e,
+                    "Error fetching %s → %s (offset %d): %s: %s",
+                    eia_start, eia_end, offset, type(e).__name__, e,
                 )
                 break
 
-            rows = _extract_rows(payload)
+            response_body = payload.get("response", {})
+            rows          = response_body.get("data", [])
+            total_rows    = int(response_body.get("total", 0))
 
             if not rows:
-                log.warning(
-                    "No rows in response. Keys: %s | Sample: %s",
-                    list(payload.keys()) if isinstance(payload, dict) else type(payload),
-                    str(payload)[:300],
-                )
+                log.warning("No rows returned. Response body: %s", str(response_body)[:300])
                 break
 
             for r in rows:
@@ -302,12 +233,14 @@ def ingest(start_date: str, end_date: str) -> None:
                 except Exception as e:
                     log.warning("Skipping malformed row %s: %s", r, e)
 
-            total_rows = _extract_total_rows(payload)
-            if total_rows == 0 or start_row + MAX_ROWS - 1 >= total_rows:
-                break
-            start_row += MAX_ROWS
-            time.sleep(RATE_LIMIT_S)
+            log.info("  Page offset=%d | got %d rows | total=%d", offset, len(rows), total_rows)
 
+            offset += PAGE_SIZE
+            if offset >= total_rows:
+                break
+            time.sleep(RATE_LIMIT)
+
+        # Bulk upsert
         if chunk_docs:
             ops = [
                 UpdateOne({"datetime": d["datetime"]}, {"$set": d}, upsert=True)
@@ -318,16 +251,16 @@ def ingest(start_date: str, end_date: str) -> None:
                 n = result.upserted_count + result.modified_count
                 total_upserted += n
                 log.info(
-                    "  %d rows  (%d new, %d updated)",
-                    len(chunk_docs), result.upserted_count, result.modified_count,
+                    "  Upserted %d docs (%d new, %d updated)",
+                    n, result.upserted_count, result.modified_count,
                 )
             except BulkWriteError as e:
                 log.error("Bulk write error: %s", e.details)
         else:
-            log.warning("  No data loaded for window %s → %s.", start_ept, end_ept)
+            log.warning("  No documents loaded for this window.")
 
         current = chunk_end
-        time.sleep(RATE_LIMIT_S)
+        time.sleep(RATE_LIMIT)
 
     log.info("Ingestion complete. Total documents upserted/updated: %d", total_upserted)
     client.close()
@@ -338,12 +271,12 @@ def ingest(start_date: str, end_date: str) -> None:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Ingest PJM hourly metered load into MongoDB Atlas"
+        description="Ingest EIA hourly PJM demand into MongoDB Atlas"
     )
-    parser.add_argument("--start", default="2014-01-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--start", default="2016-01-01", help="Start date YYYY-MM-DD")
     parser.add_argument("--end",   default="2024-12-31", help="End date   YYYY-MM-DD")
     args = parser.parse_args()
 
-    log.info("Starting PJM ingestion: %s → %s", args.start, args.end)
+    log.info("Starting EIA/PJM ingestion: %s → %s", args.start, args.end)
     ingest(args.start, args.end)
     log.info("Done.")
