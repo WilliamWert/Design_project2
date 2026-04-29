@@ -25,6 +25,7 @@ Requirements:
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
 
 import holidays
 from pymongo import MongoClient, UpdateOne
@@ -112,7 +113,7 @@ def build_features() -> None:
     # Build an in-memory index of datetime -> demand_mw for lag lookups.
     # ~87,600 documents × ~60 bytes ≈ 5 MB — safely fits in RAM.
     log.info("Loading demand index from MongoDB for lag feature computation...")
-    demand_index: dict[str, float | None] = {
+    demand_index: Dict[str, Optional[float]] = {
         doc["datetime"]: doc.get("demand_mw")
         for doc in collection.find({}, {"datetime": 1, "demand_mw": 1, "_id": 0})
     }
@@ -121,7 +122,7 @@ def build_features() -> None:
 
     # Stream all documents, compute features, batch-write updates
     cursor = collection.find({}, {"datetime": 1, "_id": 1})
-    batch: list[UpdateOne] = []
+    batch = []
     total_updated = 0
 
     for doc in tqdm(cursor, total=total_docs, desc="Computing features"):
