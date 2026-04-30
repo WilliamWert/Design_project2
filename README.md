@@ -4,7 +4,7 @@ This repository contains all materials for a machine-learning pipeline that fore
 
 **Name:** William Wert  
 **NetID:** dxg9tt  
-**DOI:** [doi]([https://doi.org/10.5281/zenodo.XXXXXXX](https://zenodo.org/records/19905642?token=eyJhbGciOiJIUzUxMiJ9.eyJpZCI6IjZkYWI5MzI1LTJjMzEtNGFlZi1iODA1LWNiZmZmOTdkNjk3MiIsImRhdGEiOnt9LCJyYW5kb20iOiIxZjBmOTYxNTI1YzA5YjVmMTE3ZTdkNGU4ZmEyNTA5MyJ9.1UMLIYh9bDZxOfti_E732knm_4TJVumpzr0luJJIy3VueDtY9VBp105VlHCEjQ4zKVtyMXuRxuqRWGQVlJyDpg))
+**DOI:** [https://doi.org/10.5281/zenodo.XXXXXXX](https://zenodo.org/records/19905642?token=eyJhbGciOiJIUzUxMiJ9.eyJpZCI6IjZkYWI5MzI1LTJjMzEtNGFlZi1iODA1LWNiZmZmOTdkNjk3MiIsImRhdGEiOnt9LCJyYW5kb20iOiIxZjBmOTYxNTI1YzA5YjVmMTE3ZTdkNGU4ZmEyNTA5MyJ9.1UMLIYh9bDZxOfti_E732knm_4TJVumpzr0luJJIy3VueDtY9VBp105VlHCEjQ4zKVtyMXuRxuqRWGQVlJyDpg)
 **Press Release:** [press_release.md](press_release.md)  
 **Pipeline:** [pipeline.ipynb](pipeline.ipynb)  
 **License:** MIT — see [LICENSE](LICENSE)
