@@ -5,7 +5,6 @@ This repository contains all materials for a machine-learning pipeline that fore
 **Name:** William Wert  
 **NetID:** dxg9tt  
 **DOI:** [doi](https://zenodo.org/records/19905642?token=eyJhbGciOiJIUzUxMiJ9.eyJpZCI6IjZkYWI5MzI1LTJjMzEtNGFlZi1iODA1LWNiZmZmOTdkNjk3MiIsImRhdGEiOnt9LCJyYW5kb20iOiIxZjBmOTYxNTI1YzA5YjVmMTE3ZTdkNGU4ZmEyNTA5MyJ9.1UMLIYh9bDZxOfti_E732knm_4TJVumpzr0luJJIy3VueDtY9VBp105VlHCEjQ4zKVtyMXuRxuqRWGQVlJyDpg)
-
 **Press Release:** [press_release.md](press_release.md)  
 **Pipeline:** [pipeline.ipynb](pipeline.ipynb)  
 **License:** MIT — see [LICENSE](LICENSE)
@@ -59,15 +58,15 @@ Energy demand forecasting lives at the intersection of power systems engineering
 
 ### Background Reading
 
-PDFs are stored in the shared OneDrive folder: **[Background Reading Folder](https://onedrive.live.com/REPLACE_WITH_YOUR_SHARED_LINK)** ← *Replace with your OneDrive shared link*
+PDFs are stored in the shared OneDrive folder: **[Background Reading Folder](https://myuva-my.sharepoint.com/:f:/g/personal/dxg9tt_virginia_edu/IgDPKY9LjseRRJyPpoEqRaBqAbmkST75RdRHzkmhYTRdT2o?e=rAzwvn)**
 
-| # | Title | Authors / Source | Year | Topic | Link |
+| # | Title | Authors / Source | Year | Topic |
 |---|---|---|---|---|---|
-| 1 | Hourly Electricity Load Forecasting Using Machine Learning Algorithms | PJM Interconnection (FERC Technical Conference) | 2024 | How PJM applies ML to day-ahead hourly load forecasting in production | [PDF](https://www.pjm.com/-/media/DotCom/library/reports-notices/testimony/2024/20240709-presentation-ferc-technical-conference-hourly-load-forecasting-machine-learning-algorithms.pdf) |
-| 2 | Methods of Forecasting Electric Energy Consumption: A Literature Review | Deb et al., *Energies* (MDPI) | 2022 | Survey of short-, medium-, and long-term forecasting methods including regression and neural networks | [PDF](https://www.mdpi.com/1996-1073/15/23/8919) |
-| 3 | Electricity Consumption and Temperature: Evidence from Satellite Data | Colacito, Hoffman & Phan, IMF Working Paper | 2021 | Empirical analysis of the temperature–electricity relationship across residential and industrial sectors | [PDF](https://www.imf.org/-/media/Files/Publications/WP/2021/English/wpiea2021022-print-pdf.ashx) |
-| 4 | Short-Term Energy Consumption Forecasting Using Deep Learning Models | Fekri et al., *Applied Sciences* (MDPI) | 2025 | Benchmarks LSTM, GRU, and transformer models on PJM hourly load data | [PDF](https://www.mdpi.com/2076-3417/15/12/6839) |
-| 5 | Statistical and Economic Evaluation of Forecasts in Electricity Markets | Marcjasz et al., arXiv:2511.13616 | 2025 | Why MAPE alone is insufficient; introduces economic value metrics for energy forecast evaluation | [PDF](https://arxiv.org/pdf/2511.13616) |
+| 1 | Hourly Electricity Load Forecasting Using Machine Learning Algorithms | PJM Interconnection (FERC Technical Conference) | 2024 | How PJM applies ML to day-ahead hourly load forecasting in production |
+| 2 | Methods of Forecasting Electric Energy Consumption: A Literature Review | Deb et al., *Energies* (MDPI) | 2022 | Survey of short-, medium-, and long-term forecasting methods including regression and neural networks |
+| 3 | Electricity Consumption and Temperature: Evidence from Satellite Data | Colacito, Hoffman & Phan, IMF Working Paper | 2021 | Empirical analysis of the temperature–electricity relationship across residential and industrial sectors |
+| 4 | Short-Term Energy Consumption Forecasting Using Deep Learning Models | Fekri et al., *Applied Sciences* (MDPI) | 2025 | Benchmarks LSTM, GRU, and transformer models on PJM hourly load data |
+| 5 | Statistical and Economic Evaluation of Forecasts in Electricity Markets | Marcjasz et al., arXiv:2511.13616 | 2025 | Why MAPE alone is insufficient; introduces economic value metrics for energy forecast evaluation |
 
 ---
 
